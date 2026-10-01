@@ -165,7 +165,7 @@ DEBUG = False   # set from --debug; dumps raw optical bytes during the ACK wait
 
 
 def send_frame_and_wait_ack(modem: Modem, frame: bytes, frame_id: int,
-                            data_baud: int, ack_timeout: float) -> bool:
+                            data_baud: int, ack_timeout: float, no_ack: bool = False) -> bool:
     """Send one frame, then wait for the 2-byte id echo. True on ACK."""
     expected = struct.pack('<H', frame_id)
     # Discard stale messages from earlier attempts. A late ACK left in the
@@ -216,11 +216,11 @@ def send_frame_and_wait_ack(modem: Modem, frame: bytes, frame_id: int,
     if DEBUG:
         print(f"    [debug] id {frame_id}: no ACK (want {expected.hex(' ')}); "
               f"modem decoded {len(rx_log)} byte(s): {rx_log.hex(' ') or '<none>'}")
-    return False
+    return no_ack
 
 
 def send_with_retries(modem: Modem, frame: bytes, frame_id: int, data_baud: int,
-                      timeout: float, retries, label: str):
+                      timeout: float, retries, label: str, no_ack: bool):
     """Send a frame and wait for its ACK, retransmitting until it ACKs.
 
     `retries` is the max number of retransmissions, or None for unlimited (used
@@ -233,7 +233,7 @@ def send_with_retries(modem: Modem, frame: bytes, frame_id: int, data_baud: int,
         if attempt > 0:
             cap = "∞" if retries is None else retries
             print(f"  {label} no ACK, retransmit {attempt}/{cap}")
-        if send_frame_and_wait_ack(modem, frame, frame_id, data_baud, timeout):
+        if send_frame_and_wait_ack(modem, frame, frame_id, data_baud, timeout, no_ack):
             return attempt
         attempt += 1
     return None
@@ -260,7 +260,7 @@ def run_test_stage(modem: Modem, payloads, noun: str, args):
         frame = build_frame(payload, frame_id, FLAG_TEST)
         label = f"test {noun} {i + 1}/{m} (id {frame_id})"
         retx = send_with_retries(modem, frame, frame_id, args.baud, args.timeout,
-                                 args.retries, label)
+                                 args.retries, label, args.no_ack)
         if retx is None:
             sys.exit(f"error: link test FAILED: {label} no ACK after {args.retries} retries")
         total_retx += retx
@@ -275,7 +275,7 @@ def send_enter(modem: Modem, enter_frame: bytes, args, label: str = "ENTER"):
     so a never-arriving ACK means it isn't responding, or the reference doesn't
     match: watch for the reply blink and Ctrl-C if it never comes."""
     send_with_retries(modem, enter_frame, FRAME_ID_ENTER, args.baud, args.timeout,
-                      None, label)   # None = retry until ACKed
+                      None, label, args.no_ack)   # None = retry until ACKed
 
 
 def stream_frames(modem: Modem, items, args, noun: str):
@@ -291,7 +291,7 @@ def stream_frames(modem: Modem, items, args, noun: str):
         if i > 0:
             time.sleep(args.settle)            # let the watch reopen RX after the prev ACK
         total_retx += send_with_retries(modem, frame, frame_id, args.baud, args.timeout,
-                                        None, label)   # None = retry until ACKed
+                                        None, label, args.no_ack)   # None = retry until ACKed
         now = time.time()
         if now - last_report >= 1.0 or i == total - 1:
             pct = 100.0 * (i + 1) / total
@@ -315,7 +315,7 @@ def send_exit_verify(modem: Modem, base: int, size: int, crc: int, args) -> bool
     exit_frame = build_frame(struct.pack('<III', base, size, crc),
                              FRAME_ID_EXIT, FLAG_VERIFY)
     if send_with_retries(modem, exit_frame, FRAME_ID_EXIT, args.baud, args.timeout,
-                         args.retries, "EXIT") is not None:
+                         args.retries, "EXIT", args.no_ack) is not None:
         print("verify OK; watch is rebooting into the new firmware. done.")
         return True
     return False
@@ -786,6 +786,8 @@ def main():
                         "Default 0.0: not needed, because the watch-side ACK "
                         "settle handles the receiver-recovery timing. Raise it "
                         "only if you also lower the watch's ACK settle. Default: 0.0")
+    p.add_argument('--no-ack', action='store_true',
+                help="Transmit frames without waiting for optical ACKs.")
     args = p.parse_args()
     global DEBUG
     DEBUG = args.debug
